@@ -1,0 +1,20 @@
+# Local runs of the two scheduled jobs, with data/ mounted and settings from .env as environment variables.
+# Extra arguments go to the job:
+#   docker compose build
+#   docker compose run --rm odds-logger --dry-run
+#   docker compose run --rm report
+services:
+  odds-logger:
+    build: .
+    image: nfl-alt-lines
+    entrypoint: ["nfl-alt-lines", "odds-logger"]
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+
+  report:
+    image: nfl-alt-lines
+    entrypoint: ["nfl-alt-lines", "report"]
+    env_file: .env
+    volumes:
+      - ./data:/app/data

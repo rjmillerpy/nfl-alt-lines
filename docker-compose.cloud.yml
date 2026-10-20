@@ -1,0 +1,51 @@
+# The Phase 4 cloud, stood in for on this machine (free): S3 is a moto server, the database is Postgres, and
+# the two jobs run with no data/ folder at all, so everything they read and write goes through S3 and Postgres.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.cloud.yml up -d s3 postgres
+#   uv run python -m nfl_alt_lines.local_cloud          # creates the bucket; --seed copies this machine's data in
+#   docker compose -f docker-compose.yml -f docker-compose.cloud.yml run --rm odds-logger --dry-run
+#   docker compose -f docker-compose.yml -f docker-compose.cloud.yml run --rm report
+#   docker compose -f docker-compose.yml -f docker-compose.cloud.yml down     # the moto server forgets everything
+#
+# Local only: Postgres trusts every connection and the S3 keys are placeholders.
+x-cloud-job: &cloud-job
+  environment:
+    STORAGE_BACKEND: s3
+    S3_BUCKET: nfl-alt-lines
+    S3_ENDPOINT_URL: http://s3:5000
+    AWS_ACCESS_KEY_ID: local
+    AWS_SECRET_ACCESS_KEY: local
+    AWS_DEFAULT_REGION: us-east-1
+    DATABASE_URL: postgresql+psycopg://nfl@postgres:5432/nfl_alt_lines
+  depends_on:
+    s3:
+      condition: service_started
+    postgres:
+      condition: service_healthy
+
+services:
+  s3:
+    image: motoserver/moto:5.2.3
+    ports:
+      - "127.0.0.1:4566:5000"
+
+  postgres:
+    image: postgres:17.11-alpine
+    environment:
+      POSTGRES_USER: nfl
+      POSTGRES_DB: nfl_alt_lines
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "127.0.0.1:55432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "nfl"]
+      interval: 2s
+      retries: 15
+
+  odds-logger:
+    <<: *cloud-job
+    volumes: !reset []  # no data/ folder: S3 and Postgres only
+
+  report:
+    <<: *cloud-job
+    volumes: !reset []

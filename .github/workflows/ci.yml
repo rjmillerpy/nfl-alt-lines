@@ -1,0 +1,236 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch: # "Run workflow" button in the Actions tab
+
+# A newer push to the same branch cancels the run still in progress.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: CI only reads the repo. The badge job below asks for more on its own.
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      # uv pinned like every other tool here (the action defaults to latest).
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: "0.12.22"
+          python-version: "3.14"
+          enable-cache: true
+
+      # --frozen: install exactly uv.lock, without re-resolving it.
+      - name: Install dependencies
+        run: uv sync --frozen --all-packages
+
+      - name: Ruff lint
+        run: uv run ruff check --output-format=github .
+
+      - name: Ruff format
+        run: uv run ruff format --check .
+
+      # Strict mode (pyproject.toml): full annotations and no implicit Any (rules 13, 47).
+      - name: Mypy
+        run: uv run mypy
+
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      coverage: ${{ steps.total.outputs.percent }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: "0.12.22"
+          python-version: "3.14"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen --all-packages
+
+      # No data/ or .env here: tests that need downloaded data skip themselves.
+      # The coverage floor (fail_under in pyproject.toml) fails the job if coverage drops.
+      - name: Pytest with coverage
+        run: uv run pytest -q --cov --cov-report=term-missing
+
+      # CI has no data/ folder, so anything there was written by a test that escaped tmp_path; on a
+      # machine with real data that test would overwrite the live ledgers.
+      - name: Tests left data/ untouched
+        run: test ! -e data || { find data -type f; exit 1; }
+
+      - name: Coverage summary
+        if: always()
+        run: uv run coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Coverage total
+        id: total
+        run: echo "percent=$(uv run coverage report --format=total)" >> "$GITHUB_OUTPUT"
+
+  bandit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: "0.12.22"
+          python-version: "3.14"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen --all-packages
+
+      # Settings in [tool.bandit] in pyproject.toml; each accepted finding is marked `# nosec` with its reason.
+      - name: Bandit
+        run: uv run bandit -c pyproject.toml -r .
+
+  # Builds the runtime image and checks both job commands start inside it (no data or secrets needed).
+  docker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build image
+        run: docker build -t nfl-alt-lines .
+
+      - name: Smoke test both commands
+        run: |
+          docker run --rm nfl-alt-lines odds-logger --help
+          docker run --rm nfl-alt-lines report --help
+          test "$(docker run --rm --entrypoint id nfl-alt-lines -u)" != 0  # runs as non-root
+          # A run with no key must fail with a reason, not succeed silently.
+          ! docker run --rm nfl-alt-lines odds-logger --dry-run
+
+  secrets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # needs the history between the previous and the new head
+
+      # Scans only the new commits (the push, or the pull request's commits).
+      # Fails on any detection, verified or not: a key that can't be verified is still a leak.
+      - name: Trufflehog (new commits)
+        uses: trufflesecurity/trufflehog@v3.99.2
+        with:
+          # The action's scanner image defaults to "latest"; pin it too. Dependabot
+          # bumps the `uses:` tag above but not this input: update both together.
+          version: 3.97.9
+          extra_args: --results=verified,unknown,unverified
+
+  # The AWS stacks (infra/): format, validate and the offline tests, which use a mock AWS provider, so no
+  # credentials and nothing created. Each root module is checked on its own.
+  terraform:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.16.6" # pinned, like every other tool here
+          terraform_wrapper: false
+
+      - name: Format
+        run: terraform fmt -check -recursive
+
+      - name: Init, validate, test each stack
+        run: |
+          for stack in bootstrap live modules/scheduled_job; do
+            echo "::group::$stack"
+            terraform -chdir="$stack" init -backend=false -input=false
+            terraform -chdir="$stack" validate
+            terraform -chdir="$stack" test
+            echo "::endgroup::"
+          done
+
+  # Publishes the coverage figure for the README badge to the `badges` branch (one JSON file that
+  # shields.io reads). Only after every check passes on main.
+  coverage-badge:
+    needs: [lint, test, bandit, docker, secrets, terraform]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Push coverage.json to the badges branch
+        env:
+          PERCENT: ${{ needs.test.outputs.coverage }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          percent=$(printf '%.0f' "$PERCENT")
+          if [ "$percent" -ge 80 ]; then color=brightgreen; elif [ "$percent" -ge 60 ]; then color=yellow; else color=orange; fi
+          mkdir badges && cd badges
+          git init -q -b badges
+          printf '{"schemaVersion": 1, "label": "coverage", "message": "%s%%", "color": "%s"}\n' "$percent" "$color" > coverage.json
+          git add coverage.json
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "Coverage badge: ${percent}%"
+          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" badges
+
+
+  # Roadmap item 19: every green push to main ships. The job gets short-lived AWS credentials through GitHub's
+  # OIDC token (no stored key), pushes the image tagged with the commit, then moves the `live` tag the
+  # scheduled tasks run to it. Rollback: point `live` back at an older commit's image (infra/README.md).
+  # Skipped until the AWS_DEPLOY_ROLE_ARN repository variable is set (terraform output deploy_role_arn).
+  deploy:
+    needs: [lint, test, bandit, docker, secrets, terraform]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_DEPLOY_ROLE_ARN != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    concurrency:
+      group: deploy
+      cancel-in-progress: false # never stop a push halfway; the next deploy waits
+    permissions:
+      contents: read
+      id-token: write # lets this job alone request an OIDC token
+    env:
+      AWS_REGION: us-east-2
+      REPOSITORY: nfl-alt-lines
+      LIVE_TAG: live
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-2
+          role-session-name: deploy-${{ github.run_id }}
+
+      - name: Build and push the commit's image
+        run: |
+          registry="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com"
+          aws ecr get-login-password | docker login --username AWS --password-stdin "$registry"
+          docker build -t "$registry/$REPOSITORY:$GITHUB_SHA" .
+          docker push "$registry/$REPOSITORY:$GITHUB_SHA"
+
+      # A retag copies the manifest under the new tag: no pull or push of the layers.
+      - name: Point the live tag at it
+        run: |
+          manifest="$(aws ecr batch-get-image --repository-name "$REPOSITORY" --image-ids imageTag="$GITHUB_SHA" \
+            --query 'images[0].imageManifest' --output text)"
+          if ! output="$(aws ecr put-image --repository-name "$REPOSITORY" --image-tag "$LIVE_TAG" \
+              --image-manifest "$manifest" 2>&1)"; then
+            # Re-running a deploy of the commit already live is not an error.
+            grep -q ImageAlreadyExistsException <<<"$output" || { echo "$output"; exit 1; }
+          fi
+          echo "live is now $GITHUB_SHA; the next scheduled runs use it"

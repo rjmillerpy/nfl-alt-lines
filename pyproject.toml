@@ -1,0 +1,122 @@
+[project]
+name = "nfl-alt-lines"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = [
+    "boto3>=1.43.114",
+    "numpy>=2.5.4",
+    "pandas>=3.0.6",
+    "psycopg[binary]>=3.3.6",
+    "pyarrow>=26.0.0",
+    "pydantic>=2.14.1",
+    "scikit-learn>=1.9.1",
+    "scipy>=1.18.1",
+    "sqlalchemy>=2.1.5",
+    "structlog>=26.1.0",
+]
+
+[project.scripts]
+nfl-alt-lines = "nfl_alt_lines.cli:main"
+
+# The strategy the jobs use is found by entry point (nfl_alt_lines/strategy.py): the private production strategy
+# (packages/model) when installed, else this public baseline.
+[project.entry-points."nfl_alt_lines.strategies"]
+baseline = "nfl_alt_lines.baseline:STRATEGY"
+
+# The private model package lives in packages/ (it is not in the public mirror, where this glob matches nothing).
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[build-system]
+requires = ["uv_build>=0.12,<0.13"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "nfl_alt_lines"
+module-root = ""
+
+[dependency-groups]
+dev = [
+    "bandit>=1.9.4",
+    "boto3-stubs[s3]>=1.43.114",
+    "moto[s3]>=5.2.4",
+    "mypy>=2.4.0",
+    "pandas-stubs>=3.0.5.260914",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.17.1",
+    "scipy-stubs>=1.18.1.1",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+
+[tool.ruff.lint]
+# Each family enforces part of CODE_QUALITY_RULES.md:
+# ANN = full annotations (47), BLE/E722 = no blind or bare except (32, 33), TRY = error handling (34, 37),
+# PLR2004 = no magic numbers (8), C901/PLR0912/PLR0915/PLR1702 = small, shallow functions (1, 6, 42),
+# RET = early returns (6), PERF/C4 = loop design (23), S = Bandit security checks.
+# Function, class and module size, loop nesting and test mirroring are in tests/test_structure.py.
+select = [
+    "E", "F", "I", "UP", "B", "SIM", "C4", "ANN", "BLE", "E722", "TRY", "PLR2004",
+    "C901", "PLR0912", "PLR0915", "PLR1702", "RET", "PERF", "S",
+]
+preview = true
+explicit-preview-rules = true  # PLR1702 is a preview rule; nothing else from preview
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    "nfl_alt_lines",
+    "tests",
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 8
+
+[tool.ruff.lint.pylint]
+max-nested-blocks = 3
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert (S101) and compare against literal expected values (PLR2004).
+"tests/**" = ["S101", "PLR2004"]
+
+[tool.mypy]
+strict = true
+# Lines marked "open-core: private-only" are dropped from the public mirror (docs/open-core-setup.md).
+files = [
+    "nfl_alt_lines",
+    "tests",
+    "conftest.py",
+]
+# tests/ has no __init__.py files, so name modules by path.
+explicit_package_bases = true
+
+# Libraries without type information.
+[[tool.mypy.overrides]]
+module = ["lightgbm", "lightgbm.*", "sklearn", "sklearn.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+# Mirrored tests can share a file name in different folders (tests/odds/test_schema.py, tests/db/test_schema.py).
+addopts = "--import-mode=importlib"
+testpaths = [
+    "tests",
+]
+
+[tool.coverage.run]
+source = [
+    "nfl_alt_lines",
+]
+
+[tool.coverage.report]
+fail_under = 90  # CODE_QUALITY_RULES.md: 90%+ coverage
+exclude_also = ['if __name__ == "__main__":']
+
+[tool.bandit]
+exclude_dirs = [
+    "tests",
+    ".venv",
+    "infra",
+]

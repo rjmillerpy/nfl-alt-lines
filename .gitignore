@@ -1,0 +1,19 @@
+.env
+data/
+.venv/
+__pycache__/
+.idea/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+# Terraform: provider downloads, local state and plans hold account details; *.tfvars may hold an email address
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+!example.tfvars
+
+# Claude Code local settings (per machine)
+.claude/settings.local.json

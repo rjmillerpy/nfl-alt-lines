@@ -1,0 +1,14 @@
+# Only pyproject.toml, uv.lock and nfl_alt_lines/ are needed; keep secrets and data out of the build context.
+.git
+.github
+.env
+.env.*
+data/
+.venv/
+**/__pycache__
+*.parquet
+.pytest_cache/
+.ruff_cache/
+.coverage*
+tests/
+scripts/
