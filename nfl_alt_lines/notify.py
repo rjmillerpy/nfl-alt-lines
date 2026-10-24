@@ -5,6 +5,7 @@ Two lists, each with its own sent mark:
   come in the 3:15 AM email" kind included.
 - REPORT_EMAIL_BETS_TO gets only the important ones: a bet to place now (a single at today's price, or the round
   robin), and only when those bets change. Each list gets its own message, so neither sees the other's addresses.
+  On a game day with no bet for it, that list gets one short "no bets today" note instead (quiet_day.py).
 
 Other settings: SMTP_USER and SMTP_APP_PASSWORD (a Gmail app password) and REPORT_SUBJECT_PREFIX (e.g. a name),
 which goes in front of the subject.
@@ -20,22 +21,24 @@ import logging
 import re
 import smtplib
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 from email.message import EmailMessage
 from enum import Enum
 from pathlib import Path
 from types import TracebackType
 from typing import Protocol, Self
 
-from nfl_alt_lines import run_status
+from nfl_alt_lines import quiet_day, run_status
 from nfl_alt_lines.common import storage
 from nfl_alt_lines.common.logs import configure_logging
 from nfl_alt_lines.common.settings import ENV_FILE, Settings, SettingsError, load_settings
 from nfl_alt_lines.common.storage import Storage
+from nfl_alt_lines.nflverse import GAMES, load_schedule
 from nfl_alt_lines.page import REPORT, REPORTS, render
 
 SENT_MARK = f"{REPORTS}/.last_emailed"  # fingerprint of the plan last emailed to REPORT_EMAIL_TO
 BETS_SENT_MARK = f"{REPORTS}/.last_emailed_bets"  # fingerprint of the bets last emailed to REPORT_EMAIL_BETS_TO
+HEARD_MARK = f"{REPORTS}/.bets_list_last_day"  # the last day REPORT_EMAIL_BETS_TO got any email (bets or the note)
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 465
 SMTP_TIMEOUT_SECONDS = 30
@@ -167,14 +170,31 @@ def notify(
     bets_mark = _digest(placed)
     if settings.report_email_bets_to and placed and _is_new(store, BETS_SENT_MARK, bets_mark, force):
         to_send.append((settings.report_email_bets_to, BETS_SENT_MARK, bets_mark))
-    if not to_send:
-        return Outcome.UNCHANGED
     password = settings.smtp_app_password.get_secret_value().replace(" ", "")
     for to, path, new_mark in to_send:
         send(build_message(report, settings, now, to), settings.smtp_user, password, connect)
         store.write(path, new_mark.encode())
+        if path == BETS_SENT_MARK:
+            store.write(HEARD_MARK, quiet_day.today(quiet_day.utc(now)).encode())
         run_status.count("emails_sent")
-    return Outcome.SENT
+    noted = _note_quiet_day(settings, now, store, password, connect)
+    return Outcome.SENT if to_send or noted else Outcome.UNCHANGED
+
+
+def _note_quiet_day(settings: Settings, now: datetime, store: Storage, password: str, connect: SmtpConnect) -> bool:
+    """The bets list's "no bets today" note, when it is due (quiet_day.py); True if it was sent."""
+    if not settings.report_email_bets_to or not store.exists(GAMES):
+        return False
+    at = quiet_day.utc(now)
+    games = quiet_day.todays_games(load_schedule(store=store), at)
+    heard = store.read(HEARD_MARK).decode() if store.exists(HEARD_MARK) else None
+    if not quiet_day.due(games, at, heard):
+        return False
+    send(quiet_day.note(games, at, settings), settings.smtp_user or "", password, connect)
+    store.write(HEARD_MARK, quiet_day.today(at).encode())
+    run_status.count("emails_sent")
+    log.info("no-bets note sent")
+    return True
 
 
 def main(
@@ -189,7 +209,7 @@ def main(
     configure_logging("notify")
     try:
         settings = load_settings(env_file)
-        outcome = notify(settings, datetime.now(), store or storage.default_storage(), connect, args.force)
+        outcome = notify(settings, datetime.now(UTC), store or storage.default_storage(), connect, args.force)
     except (SettingsError, EmailSendError) as problem:
         # No traceback (TRY400): the chained low-level error's text can hold addresses.
         log.error("email not sent; the next run tries again", extra={"reason": str(problem)})  # noqa: TRY400

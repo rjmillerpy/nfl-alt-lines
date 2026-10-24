@@ -14,8 +14,10 @@ from nfl_alt_lines import notify
 from nfl_alt_lines.common import storage
 from nfl_alt_lines.common.settings import Settings
 from nfl_alt_lines.common.storage import LocalStorage
+from nfl_alt_lines.nflverse import GAMES
 from nfl_alt_lines.notify import (
     BETS_SENT_MARK,
+    HEARD_MARK,
     SENT_MARK,
     SMTP_HOST,
     SMTP_PORT,
@@ -242,6 +244,46 @@ def test_bets_list_hears_nothing_without_a_bet_to_place(report_file: Path) -> No
     assert send(server, report_file, settings(report_email_bets_to=FRIENDS)) is Outcome.SENT
     assert [message["To"] for message in server.sent] == [USER]
     assert not report_file.with_name(BETS_SENT_MARK.rsplit("/", 1)[1]).exists()
+
+
+# NOW (9:15 UTC) is 4:15 AM Central: the last run before a 5:00 AM Central (6:00 AM Eastern) kickoff that day.
+SCHEDULE_CSV = (
+    "game_id,season,week,gameday,gametime,away_team,home_team\n2026_07_SEA_DEN,2026,7,2026-10-15,06:00,SEA,DEN\n"
+)
+
+
+def with_schedule(report_file: Path, text: str) -> LocalStorage:
+    store = LocalStorage(report_file.parents[1])
+    store.write(GAMES, SCHEDULE_CSV.encode())
+    report_file.write_text(text)
+    return store
+
+
+def test_a_game_day_without_bets_sends_the_bets_list_one_note(report_file: Path) -> None:
+    store = with_schedule(report_file, f"Run at 1\n\nWHAT TO BET THIS WEEK\n{NO_BETS}\n")
+    server = FakeSmtp()
+    config = settings(report_email_bets_to=FRIENDS)
+    assert send(server, report_file, config) is Outcome.SENT
+    assert [message["To"] for message in server.sent] == [USER, FRIENDS]
+    assert server.sent[1]["Subject"] == "NFL alt lines: no bets today (Thursday Oct 15)"
+    assert "SEA @ DEN 5:00 AM" in server.sent[1].get_content()
+    assert store.read(HEARD_MARK).decode() == "2026-10-15"
+    assert send(server, report_file, config) is Outcome.UNCHANGED  # once a day
+
+
+def test_no_note_when_the_bets_list_got_a_bet_today(report_file: Path) -> None:
+    store = with_schedule(report_file, report())
+    server = FakeSmtp()
+    send(server, report_file, settings(report_email_bets_to=FRIENDS))
+    assert [message["Subject"] for message in server.sent] == ["NFL alt lines report Thu Oct 15 09:15"] * 2
+    assert store.read(HEARD_MARK).decode() == "2026-10-15"
+
+
+def test_no_note_without_a_bets_list(report_file: Path) -> None:
+    with_schedule(report_file, f"Run at 1\n\nWHAT TO BET THIS WEEK\n{NO_BETS}\n")
+    server = FakeSmtp()
+    send(server, report_file)
+    assert [message["To"] for message in server.sent] == [USER]
 
 
 def test_a_failure_on_the_bets_list_retries_only_that_list(report_file: Path) -> None:
