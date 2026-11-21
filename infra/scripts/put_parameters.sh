@@ -15,7 +15,7 @@ env_file="${1:-$(dirname "$0")/../../.env}"
 prefix="/nfl-alt-lines"
 region="us-east-2"
 required=(ODDS_API_KEY SMTP_USER SMTP_APP_PASSWORD)
-optional=(BANKROLL REPORT_EMAIL_BETS_TO REPORT_EMAIL_TO REPORT_SUBJECT_PREFIX) # infra/live: optional_report_settings
+optional=(BANKROLL PUSHOVER_TOKEN PUSHOVER_USER REPORT_EMAIL_BETS_TO REPORT_EMAIL_TO REPORT_SUBJECT_PREFIX) # infra/live: optional_report_settings
 
 # NAME=value from the env file, split at the first `=` like nfl_alt_lines/common/settings.py; empty if absent.
 value_of() {

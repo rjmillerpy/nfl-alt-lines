@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 from pydantic import SecretStr
 
-from nfl_alt_lines import kickoff_email, strategy
+from nfl_alt_lines import kickoff_email, push, strategy
 from nfl_alt_lines.common.settings import Settings
 from nfl_alt_lines.common.storage import LocalStorage
 from nfl_alt_lines.nflverse import GAMES
@@ -80,6 +80,24 @@ def test_one_email_per_kickoff_with_the_bets_and_windy_unders(
     assert "SINGLE CHI @ ATL" in text and "MIA @ BUF" not in text
     assert "WINDY UNDER CHI @ ATL: under 41.5 at -104 on novig (forecast wind 20 mph)" in text
     assert kickoff_email.kickoff_emails(settings(), NOW, store, server) == 0  # marked: never twice
+
+
+def test_each_email_is_also_a_loud_phone_alert(store: LocalStorage, monkeypatch: pytest.MonkeyPatch) -> None:
+    alerts: list[tuple[str, str, bool]] = []
+
+    def record(_: object, title: str, text: str, loud: bool) -> bool:
+        alerts.append((title, text, loud))
+        return True
+
+    monkeypatch.setattr(push, "alert", record)
+    assert kickoff_email.kickoff_emails(settings(), NOW, store, FakeSmtp()) == 1
+    title, text, loud = alerts[0]
+    assert (
+        loud
+        and title.endswith("CHI @ ATL")
+        and text.startswith("SINGLE CHI @ ATL")
+        and "Details in your email." in text
+    )
 
 
 def test_nothing_sent_without_a_bet_or_windy_game(store: LocalStorage) -> None:

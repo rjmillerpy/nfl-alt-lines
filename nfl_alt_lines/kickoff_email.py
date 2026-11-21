@@ -5,7 +5,8 @@ the windy unders (windy.py) from the odds logger's newest venue snapshot. Every 
 the report runs at :15 every hour, so exactly one run falls inside WINDOW (40 to 100 minutes before kickoff:
 12:15 for a 1:00 PM game, 3:15 for 4:25, 7:15 for 8:20, all Eastern). Kickoffs already emailed are marked in
 storage. Nothing is sent when those games have no model bet and no windy under. It goes to REPORT_EMAIL_TO only
-(the owner's list); the bets-only list is unchanged. Like notify.py, a send is never retried.
+(the owner's list); the bets-only list is unchanged. Like notify.py, a send is never retried. Each email is also a
+loud phone alert (push.py), when Pushover is set up.
 """
 
 import logging
@@ -16,7 +17,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from nfl_alt_lines import windy
+from nfl_alt_lines import push, windy
 from nfl_alt_lines.common import storage
 from nfl_alt_lines.common.settings import ENV_FILE, Settings, SettingsError, load_settings
 from nfl_alt_lines.common.storage import Storage
@@ -60,6 +61,12 @@ def body(at: pd.Timestamp, games: list[str], bets: list[str], windy_lines: list[
         lines += ["", windy.heading(), *(windy_lines or ["    none: no game in this slot is forecast windy"])]
     lines += ["", "Check each line and price in the app before betting: they move."]
     return "\n".join(lines)
+
+
+def alert_text(bets: list[str], windy_lines: list[str]) -> str:
+    """The phone alert: the bets in short, the email has the rest."""
+    lines = [*bets, *(line.strip() for line in windy_lines)]
+    return "\n".join(lines) + "\nDetails in your email."
 
 
 def message(text: str, settings: Settings, games: list[str]) -> EmailMessage:
@@ -106,6 +113,7 @@ def kickoff_emails(settings: Settings, now: datetime, store: Storage, connect: S
         windy_lines = _windy_lines(starting, at, snapshot, settings.bankroll)
         if bets or windy_lines:
             send(message(body(at, games, bets, windy_lines), settings, games), settings.smtp_user, password, connect)
+            push.alert(settings, f"{SUBJECT}: {', '.join(games)}", alert_text(bets, windy_lines), loud=True)
             count += 1
         sent.append(at.isoformat())
         store.write(SENT_MARK, "\n".join(sent[-KEEP_MARKS:]).encode())

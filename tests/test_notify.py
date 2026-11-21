@@ -10,7 +10,7 @@ from typing import Self
 import pytest
 from pydantic import SecretStr
 
-from nfl_alt_lines import notify
+from nfl_alt_lines import notify, push
 from nfl_alt_lines.common import storage
 from nfl_alt_lines.common.settings import Settings
 from nfl_alt_lines.common.storage import LocalStorage
@@ -378,3 +378,37 @@ def test_a_bigger_line_reaches_the_bets_only_list_on_its_own_line() -> None:
         "    BIGGER LINE SINGLE A: Under 30.5 at +400 on fanduel, 0.2%\n"
     )
     assert bets(report) == "    BIGGER LINE SINGLE A: Under 30.5 at +400 on fanduel, 0.2%"
+
+
+def test_new_bets_are_a_quiet_phone_alert_once(report_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    alerts: list[tuple[str, bool]] = []
+
+    def record(_: object, title: str, text: str, loud: bool) -> bool:
+        alerts.append((text, loud))
+        return True
+
+    monkeypatch.setattr(push, "alert", record)
+    keys = settings(pushover_user=SecretStr("u"), pushover_token=SecretStr("t"))
+    send(FakeSmtp(), report_file, keys)
+    send(FakeSmtp(), report_file, keys)
+    assert alerts == [
+        (
+            "SEA @ DEN (Thu 7:15 PM): SINGLE Under 35.5 at +200 on fanduel, 0.5% of bankroll"
+            " (needs 33.3%, model 44.3%)",
+            False,
+        )
+    ]
+
+
+def test_a_failed_alert_is_tried_again_next_run(report_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+
+    def fail(_: object, title: str, text: str, loud: bool) -> bool:
+        calls.append(1)
+        return False
+
+    monkeypatch.setattr(push, "alert", fail)
+    keys = settings(pushover_user=SecretStr("u"), pushover_token=SecretStr("t"))
+    send(FakeSmtp(), report_file, keys)
+    send(FakeSmtp(), report_file, keys)
+    assert len(calls) == 2

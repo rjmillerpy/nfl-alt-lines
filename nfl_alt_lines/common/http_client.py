@@ -86,3 +86,17 @@ def get(
             log.warning("fetch failed, retrying", extra={"url": base, "attempt": attempt, "error": str(failure)})
             sleep(BACKOFF_SECONDS * 2 ** (attempt - 1))
     raise RetriesExhaustedError(base, attempts, failure) from failure
+
+
+def post_once(base: str, form: Mapping[str, str | int], *, timeout: float = TIMEOUT_SECONDS) -> Response:
+    """POST a form once, never retried: for sends (phone alerts) where a retry after a timeout could deliver twice."""
+    url = _url(base, None)
+    request = urllib.request.Request(url, data=urllib.parse.urlencode(form).encode(), method="POST")  # noqa: S310  # nosec B310 - _url allows https only
+    try:
+        # _url allows only https, so no file: or custom scheme can reach urlopen.
+        with urllib.request.urlopen(request, timeout=timeout) as reply:  # noqa: S310  # nosec B310
+            return Response(body=reply.read(), headers=dict(reply.headers.items()))
+    except urllib.error.HTTPError as error:
+        raise RefusedError(base, error.code, error.read().decode(errors="replace")[:ERROR_BODY_CHARS]) from error
+    except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+        raise RetriesExhaustedError(base, 1, error) from error

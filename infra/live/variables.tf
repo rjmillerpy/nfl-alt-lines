@@ -54,8 +54,8 @@ variable "optional_report_settings" {
   default     = ["BANKROLL", "REPORT_EMAIL_BETS_TO", "REPORT_EMAIL_TO", "REPORT_SUBJECT_PREFIX"]
 
   validation {
-    condition     = length(setsubtract(var.optional_report_settings, ["BANKROLL", "REPORT_EMAIL_BETS_TO", "REPORT_EMAIL_TO", "REPORT_SUBJECT_PREFIX"])) == 0
-    error_message = "Only BANKROLL, REPORT_EMAIL_BETS_TO, REPORT_EMAIL_TO and REPORT_SUBJECT_PREFIX are optional report settings."
+    condition     = length(setsubtract(var.optional_report_settings, ["BANKROLL", "PUSHOVER_TOKEN", "PUSHOVER_USER", "REPORT_EMAIL_BETS_TO", "REPORT_EMAIL_TO", "REPORT_SUBJECT_PREFIX"])) == 0
+    error_message = "Only BANKROLL, PUSHOVER_TOKEN, PUSHOVER_USER, REPORT_EMAIL_BETS_TO, REPORT_EMAIL_TO and REPORT_SUBJECT_PREFIX are optional report settings."
   }
 }
 

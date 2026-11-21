@@ -35,6 +35,8 @@ class Settings(BaseModel):
     report_email_to: tuple[str, ...] = ()  # every email
     report_email_bets_to: tuple[str, ...] = ()  # only the emails with a bet to place now
     report_subject_prefix: str = ""
+    pushover_user: SecretStr | None = None  # phone alerts (push.py); both unset: no alerts
+    pushover_token: SecretStr | None = None
     bankroll: float | None = Field(default=None, gt=0)
     storage_backend: Literal["local", "s3"] = "local"
     s3_bucket: str | None = None

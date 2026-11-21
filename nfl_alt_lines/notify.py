@@ -8,6 +8,8 @@ Two lists, each with its own sent mark:
   On a game day with no bet for it, that list gets one short "no bets today" note instead (quiet_day.py), unless
   the plan says NO PRICES: then "no bets" is not true, and the note is held back.
 
+When Pushover is set up (push.py), a change to the bets to place is also a normal-priority phone alert.
+
 Other settings: SMTP_USER and SMTP_APP_PASSWORD (a Gmail app password) and REPORT_SUBJECT_PREFIX (e.g. a name),
 which goes in front of the subject.
 
@@ -29,7 +31,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Protocol, Self
 
-from nfl_alt_lines import quiet_day, run_status
+from nfl_alt_lines import push, quiet_day, run_status
 from nfl_alt_lines.common import storage
 from nfl_alt_lines.common.logs import configure_logging
 from nfl_alt_lines.common.settings import ENV_FILE, Settings, SettingsError, load_settings
@@ -39,6 +41,7 @@ from nfl_alt_lines.page import REPORT, REPORTS, render
 from nfl_alt_lines.plan import PRICES_MISSING
 
 SENT_MARK = f"{REPORTS}/.last_emailed"  # fingerprint of the plan last emailed to REPORT_EMAIL_TO
+PUSH_MARK = f"{REPORTS}/.last_pushed_bets"  # fingerprint of the bets last sent as a phone alert
 BETS_SENT_MARK = f"{REPORTS}/.last_emailed_bets"  # fingerprint of the bets last emailed to REPORT_EMAIL_BETS_TO
 HEARD_MARK = f"{REPORTS}/.bets_list_last_day"  # the last day REPORT_EMAIL_BETS_TO got any email (bets or the note)
 SMTP_HOST = "smtp.gmail.com"
@@ -179,8 +182,19 @@ def notify(
         if path == BETS_SENT_MARK:
             store.write(HEARD_MARK, quiet_day.today(quiet_day.utc(now)).encode())
         run_status.count("emails_sent")
+    _push_bets(settings, store, placed, force)
     noted = _note_quiet_day(settings, now, store, password, connect)
     return Outcome.SENT if to_send or noted else Outcome.UNCHANGED
+
+
+def _push_bets(settings: Settings, store: Storage, placed: str, force: bool) -> None:
+    """A normal-priority phone alert when the bets to place change (silent when the phone is: the plan email can
+    go out at night). The mark is written only once Pushover accepted it, so a failure is tried again next hour."""
+    mark = _digest(placed)
+    if not placed or not push.configured(settings) or not _is_new(store, PUSH_MARK, mark, force):
+        return
+    if push.alert(settings, "New NFL bets", "\n".join(line.strip() for line in placed.splitlines()), loud=False):
+        store.write(PUSH_MARK, mark.encode())
 
 
 def _note_quiet_day(settings: Settings, now: datetime, store: Storage, password: str, connect: SmtpConnect) -> bool:

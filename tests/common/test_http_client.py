@@ -136,3 +136,23 @@ def test_retry_is_logged_without_the_query(monkeypatch: pytest.MonkeyPatch, capl
     assert "fetch failed, retrying" in caplog.text
     assert "secret-key" not in caplog.text
     assert all(getattr(record, "url", URL) == URL for record in caplog.records)
+
+
+def test_post_once_sends_the_form_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    network = install(monkeypatch, [FakeReply(b'{"status":1}', {"X-A": "1"})])
+    reply = http_client.post_once(URL, {"user": "u", "priority": 2})
+    request = network.calls[0][0]
+    assert isinstance(request, urllib.request.Request)  # noqa: S310 - a type check, nothing is opened
+    assert request.get_method() == "POST"
+    assert request.data == b"user=u&priority=2" and reply.body == b'{"status":1}'
+
+
+@pytest.mark.parametrize(
+    ("failure", "raised"),
+    [(http_error(400, b"bad token"), RefusedError), (urllib.error.URLError("down"), RetriesExhaustedError)],
+)
+def test_post_once_never_retries(monkeypatch: pytest.MonkeyPatch, failure: Exception, raised: type[Exception]) -> None:
+    network = install(monkeypatch, [failure, FakeReply(b"{}", {})])
+    with pytest.raises(raised):
+        http_client.post_once(URL, {"user": "u"})
+    assert len(network.calls) == 1
