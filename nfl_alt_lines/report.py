@@ -106,7 +106,7 @@ class Week:
 
 def _print_sections(week: Week, args: argparse.Namespace, sources: Sources) -> None:
     """Everything after the header line, in the order the email shows it."""
-    from nfl_alt_lines import plan, prop_report, round_robin  # imported here: they build on this module
+    from nfl_alt_lines import plan, prop_report, round_robin, windy  # imported here: they build on this module
 
     ledger, schedule, now = week.ledger, week.schedule, week.now
     with timed("props"):
@@ -126,6 +126,11 @@ def _print_sections(week: Week, args: argparse.Namespace, sources: Sources) -> N
     with timed("sections: plan and glance"):
         print(plan.plan(ledger, early, round_robins, singles, now, sources.bankroll()))
         print()
+        # After the plan's block, so a forecast moving around the threshold never re-sends the plan email.
+        watch = windy.watch_section(schedule, now, sources.bankroll())
+        if watch:
+            print("\n".join(watch))
+            print()
         print(at_a_glance(ledger, early, args.book, now, leans, weather_notes(schedule)))
         print()
         print(round_robin.report(round_robins, round_robin.game_multipliers(schedule), args.book, now))

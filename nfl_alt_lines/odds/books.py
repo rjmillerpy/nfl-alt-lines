@@ -12,7 +12,9 @@ EXCHANGES = ("kalshi", "novig")
 # Not licensed in any US state: singles only, and the email always names a licensed alternative.
 OFFSHORE = ("bovada",)
 SINGLES_BOOKS = (*BOOKS, *EXCHANGES, *OFFSHORE)  # every book a single may go to
-BOOK_NAMES = {"williamhill_us": "caesars"}  # API keys renamed to what the app is called
+# Books that do not limit winning bettors, for the windy unders (windy.py): Circa (Illinois) posts main lines only.
+NO_LIMIT_BOOKS = ("circa", *EXCHANGES)
+BOOK_NAMES = {"williamhill_us": "caesars", "circasports": "circa"}  # API keys renamed to what the app is called
 # Kalshi's taker fee per $1 contract bought at price P is FEE_RATE x P x (1 - P); The Odds API's price leaves it
 # out, so it is added here (Kalshi rounds each order's fee up to the cent, which this ignores). Novig's fee could
 # not be confirmed when this was written (2026-10-19); none is assumed.

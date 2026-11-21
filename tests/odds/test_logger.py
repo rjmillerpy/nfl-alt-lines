@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -26,7 +27,7 @@ from nfl_alt_lines.odds.logger import (
     save,
 )
 from nfl_alt_lines.odds.schema import Event, EventSnapshot, SlateSnapshot
-from nfl_alt_lines.odds.snapshots import CLOSING, EVENTS, MAIN, MOVEMENT, by_event, snapshot_key
+from nfl_alt_lines.odds.snapshots import CLOSING, EVENTS, MAIN, MOVEMENT, VENUES, by_event, snapshot_key
 from tests.odds.network import FakeOddsAPI
 from tests.odds.payloads import event, main_book
 
@@ -237,3 +238,37 @@ def test_the_hourly_job_takes_movement_snapshots_unless_told_not_to(
     network = FakeOddsAPI({"/events": [upcoming], "/odds": [upcoming]}, credits=PAID_MONTH)
     logger.main(flags, env_file, network, store)
     assert network.paths == calls
+
+
+VENUE_SOON = "2026-10-18T13:30:00Z"  # 90 minutes out: inside VENUE_LEAD, before the closing hour
+
+
+@pytest.mark.parametrize(
+    ("kickoff", "last", "expected"),
+    [
+        (VENUE_SOON, None, True),
+        (VENUE_SOON, NOW - timedelta(minutes=55), True),
+        (VENUE_SOON, NOW - timedelta(minutes=20), False),  # taken this hour already
+        (LATER, None, False),  # nothing kicks off within two hours
+    ],
+)
+def test_venues_due(kickoff: str, last: datetime | None, expected: bool) -> None:
+    keys = [snapshot_key(VENUES, last)] if last else []
+    assert logger.venues_due(games(kickoff), keys, NOW) is expected
+
+
+def test_venue_totals_are_saved_for_the_windy_unders(store: LocalStorage, ledgers: LedgerStore) -> None:
+    soon = event(kickoff=VENUE_SOON)
+    network = FakeOddsAPI({"/events": [soon], "/odds": [soon], "/events/e1/odds": soon})
+    log_prices(client(network), store, replace(RUN, venues=True), ledgers)
+    venue_calls = [params for path, params in network.requests if path == "/odds" and params["markets"] == "totals"]
+    assert len(venue_calls) == 1 and "circasports" in str(venue_calls[0]["bookmakers"])
+    assert len(store.keys(VENUES)) == 1
+
+
+def test_venue_totals_never_spend_the_reserve(store: LocalStorage, ledgers: LedgerStore) -> None:
+    soon = event(kickoff=VENUE_SOON)
+    replies = {"/events": [soon], "/odds": [soon], "/events/e1/odds": soon}
+    network = FakeOddsAPI(replies, credits=logger.VENUE_RESERVE + 2)  # the game's own snapshot takes it under
+    log_prices(client(network), store, replace(RUN, venues=True), ledgers)
+    assert store.keys(VENUES) == []

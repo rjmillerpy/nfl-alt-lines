@@ -8,6 +8,10 @@ Line movement (roadmap item 29): every MOVEMENT_EVERY the main spreads and total
 saved too, at every book (2 credits a time, about 480 a month), so a season of how lines move all week builds
 up. They go to their own folder, which the hourly report never reads, and to the logged prices table.
 
+Windy unders (windy.py): at a run with a game kicking off within VENUE_LEAD, the main totals of every game at the
+books that do not limit winners (plus Pinnacle, for reference) are saved, at most every VENUE_EVERY: one credit,
+about 70 a month in season. The email an hour before kickoff reads the latest one.
+
 Run hourly; the events lookup is free and a run with nothing due spends no credits.
 """
 
@@ -26,6 +30,7 @@ from nfl_alt_lines.common.settings import ENV_FILE, load_settings
 from nfl_alt_lines.common.storage import Storage, open_storage
 from nfl_alt_lines.db import service
 from nfl_alt_lines.db.service import LedgerStore, add_prices
+from nfl_alt_lines.odds.books import NO_LIMIT_BOOKS, api_key
 from nfl_alt_lines.odds.client import COMMON_PARAMS, Fetch, OddsClient
 from nfl_alt_lines.odds.prices import price_rows
 from nfl_alt_lines.odds.schema import Event
@@ -35,6 +40,7 @@ from nfl_alt_lines.odds.snapshots import (
     MAIN,
     MAIN_MARKETS,
     MOVEMENT,
+    VENUES,
     by_event,
     snapshot_key,
     stamp_time,
@@ -56,6 +62,10 @@ MOVEMENT_SLACK = timedelta(minutes=10)  # runs start a little late; a 3-hour gap
 # Line movement is nice to have: it only runs while more than this is left, so it never spends what pricing
 # snapshots need, and never runs at all on the free tier (500 credits a month).
 MOVEMENT_RESERVE = 1000
+VENUE_BOOKS = ",".join(api_key(book) for book in (*NO_LIMIT_BOOKS, "pinnacle"))
+VENUE_LEAD = timedelta(hours=2)
+VENUE_EVERY = timedelta(minutes=50)  # once per hourly run, allowing for a late start
+VENUE_RESERVE = 100  # never spends what pricing snapshots need
 EVENT_LIST = TypeAdapter(tuple[Event, ...])
 
 log = logging.getLogger(__name__)
@@ -154,6 +164,26 @@ def movement_due(keys: list[str], now: datetime) -> bool:
     return latest is None or now - latest >= MOVEMENT_EVERY - MOVEMENT_SLACK
 
 
+def venues_due(events: tuple[Event, ...], keys: list[str], now: datetime) -> bool:
+    """A game kicks off within VENUE_LEAD and the last venue snapshot is at least VENUE_EVERY old (or none)."""
+    soon = any(timedelta(0) < event.commence_time - now <= VENUE_LEAD for event in events)
+    latest = max((stamp_time(key) for key in keys), default=None)
+    return soon and (latest is None or now - latest >= VENUE_EVERY)
+
+
+def _snapshot_venues(client: OddsClient, sinks: Sinks, now: datetime, events: tuple[Event, ...], remaining: int) -> int:
+    """Main totals at the books that do not limit winners, when due and credits allow; returns the credits left."""
+    if not venues_due(events, sinks.files.keys(VENUES), now):
+        return remaining
+    if remaining - 1 < VENUE_RESERVE:
+        log.warning("venue totals skipped", extra={"credits_remaining": remaining})
+        return remaining
+    body, remaining = client.get("/odds", markets="totals", bookmakers=VENUE_BOOKS, oddsFormat="american")
+    save(sinks.files, VENUES, now, body)
+    log.info("venue totals logged", extra={"credits_remaining": remaining})
+    return remaining
+
+
 def _snapshot_movement(client: OddsClient, sinks: Sinks, now: datetime, remaining: int) -> None:
     """Main lines of every upcoming game, when one is due and the credits allow it."""
     if not movement_due(sinks.files.keys(MOVEMENT), now):
@@ -176,6 +206,7 @@ class Run:
     markets: list[str]
     dry_run: bool = False
     movement: bool = False  # also take a line-movement snapshot when one is due (the hourly job does)
+    venues: bool = False  # also the windy unders' venue totals when due (the hourly job does)
 
 
 def log_prices(client: OddsClient, store: Storage, run: Run, prices: LedgerStore | None = None) -> int:
@@ -199,6 +230,8 @@ def log_prices(client: OddsClient, store: Storage, run: Run, prices: LedgerStore
         remaining = _snapshot_due(client, sinks, now, due, markets)
         run_status.count("games_priced", len(due))
     remaining = _snapshot_closing(client, sinks, now, closing, remaining)
+    if run.venues:
+        remaining = _snapshot_venues(client, sinks, now, events, remaining)
     if run.movement and events:
         _snapshot_movement(client, sinks, now, remaining)
     return len(due)
@@ -217,6 +250,7 @@ def main(
     parser.add_argument("--markets", default=",".join(EVENT_MARKETS))
     parser.add_argument("--dry-run", action="store_true", help="show what would be pulled; spends nothing")
     parser.add_argument("--no-movement", action="store_true", help="skip the line-movement snapshot")
+    parser.add_argument("--no-venues", action="store_true", help="skip the windy unders' venue totals")
     args = parser.parse_args(argv)
     configure_logging("odds-logger")
     settings = load_settings(env_file)
@@ -224,7 +258,12 @@ def main(
         raise MissingKeyError
     client = OddsClient(settings.odds_api_key, fetch=fetch)
     run = Run(
-        datetime.now(UTC), timedelta(hours=args.hours), args.markets.split(","), args.dry_run, not args.no_movement
+        datetime.now(UTC),
+        timedelta(hours=args.hours),
+        args.markets.split(","),
+        args.dry_run,
+        not args.no_movement,
+        not args.no_venues,
     )
     log_prices(client, store or open_storage(settings), run)
 

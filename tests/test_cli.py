@@ -116,19 +116,20 @@ def test_report_command_exits_with_the_jobs_code(monkeypatch: pytest.MonkeyPatch
 
 
 def test_job_wrappers_call_the_modules(monkeypatch: pytest.MonkeyPatch) -> None:
-    from nfl_alt_lines import notify, page, report, results
+    from nfl_alt_lines import kickoff_email, notify, page, report, results
     from nfl_alt_lines.odds import logger
 
     seen: list[str] = []
     monkeypatch.setattr(report, "main", lambda argv: seen.append("report"))
     monkeypatch.setattr(logger, "main", lambda argv: seen.append("logger"))
     monkeypatch.setattr(page, "main", lambda: seen.append("page"))
+    monkeypatch.setattr(kickoff_email, "main", lambda: seen.append("kickoff"))
     monkeypatch.setattr(notify, "main", lambda argv: seen.append("notify"))
     monkeypatch.setattr(results, "main", lambda: seen.append("results"))
     cli._report([])
     cli._odds_logger([])
     cli._publish()
-    assert seen == ["report", "logger", "page", "notify", "results"]
+    assert seen == ["report", "logger", "page", "kickoff", "notify", "results"]
 
 
 def test_results_command_prints_the_preview(

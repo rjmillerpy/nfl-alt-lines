@@ -16,6 +16,7 @@ RAW_PREFIX = "raw/odds"
 EVENTS = f"{RAW_PREFIX}/events"  # one folder per game, one file per snapshot
 MAIN = f"{RAW_PREFIX}/main"  # main lines for every upcoming game, one file per logger run
 MOVEMENT = f"{RAW_PREFIX}/movement"  # main lines for every upcoming game every few hours (line movement)
+VENUES = f"{RAW_PREFIX}/venues"  # main totals at the books that do not limit winners, near kickoff (windy.py)
 CLOSING = f"{RAW_PREFIX}/closing"  # one folder per game: alternate lines at the last run before kickoff (CLV)
 HISTORY = f"{RAW_PREFIX}/history"  # one file per past game, from the paid history download
 TS_FORMAT = "%Y%m%dT%H%M%SZ"  # snapshot file names

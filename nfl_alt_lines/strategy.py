@@ -45,6 +45,10 @@ class Staking:
 
     A bigger line is an extra single on a top-ranked under, on a line moved `big_line_shifts` points against
     the bettor (the owner's choice, 2026-11-20). A `big_line_stake` of 0 turns it off.
+
+    A windy under is the main-line under in an open-air game forecast to blow at `windy_wind_mph` or more, at
+    the books that do not limit winners (windy.py; experimental, the owner's choice, 2026-11-21). A
+    `windy_stake` of 0 turns it off.
     """
 
     sunday_budget: float
@@ -53,6 +57,9 @@ class Staking:
     big_line_stake: float = 0.0
     big_line_shifts: tuple[float, float] = (10.0, 13.0)
     big_line_note: str = ""  # the evidence, shown under the bigger lines
+    windy_stake: float = 0.0
+    windy_wind_mph: float = 0.0
+    windy_note: str = ""  # the evidence, shown with the windy unders
 
 
 @dataclass(frozen=True)

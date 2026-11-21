@@ -77,10 +77,12 @@ def _report(argv: list[str]) -> None:
 
 
 def _publish() -> None:
-    from nfl_alt_lines import notify, page, results
+    from nfl_alt_lines import kickoff_email, notify, page, results
 
     with timed("page"):
         page.main()
+    with timed("kickoff email"):  # before the plan email, whose failure exits the job
+        kickoff_email.main()
     with timed("email"):
         notify.main([])
     with timed("results email"):
