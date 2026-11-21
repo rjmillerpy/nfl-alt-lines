@@ -86,7 +86,7 @@ def test_only_open_air_games_without_weather_are_filled(cache: Path, monkeypatch
     filled = add_weather(schedule(), NOW).set_index("game_id")
     assert filled.loc[["g2"], ["temp", "wind"]].to_numpy().tolist() == [[40.0, 20.0]]
     assert filled.loc["g1", "wind"] == 5.0
-    assert pd.isna(filled.loc["g3", "wind"])
+    assert filled["wind"].isna()["g3"]
     assert filled["forecast"].tolist() == [False, True, False, False]
     assert network.asked == [weather.STADIUMS["DEN00"]]
 
@@ -152,7 +152,7 @@ def test_a_failed_fetch_falls_back_to_the_stale_cache_and_is_logged(
 def test_a_failed_fetch_without_a_cache_leaves_the_game_unfilled(cache: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     serve(monkeypatch, OpenMeteo(failure=http_client.RefusedError(weather.API, 400, "bad request")))
     filled = add_weather(one_game("2026-10-18"), NOW)
-    assert pd.isna(filled.loc[0, "temp"])
+    assert filled["temp"].isna()[0]
     assert not filled.loc[0, "forecast"]
 
 
@@ -163,7 +163,7 @@ def test_a_malformed_reply_is_not_cached(
     with caplog.at_level(logging.WARNING, logger=weather.__name__):
         filled = add_weather(one_game("2026-10-18"), NOW)
     assert not (cache / "DEN00.json").exists()
-    assert pd.isna(filled.loc[0, "temp"])
+    assert filled["temp"].isna()[0]
     assert "not understood" in caplog.text
 
 
@@ -172,7 +172,7 @@ def test_a_corrupt_cached_reply_is_skipped(cache: Path, monkeypatch: pytest.Monk
     network = serve(monkeypatch, OpenMeteo())
     filled = add_weather(one_game("2026-10-18"), NOW)
     assert network.asked == []
-    assert pd.isna(filled.loc[0, "temp"])
+    assert filled["temp"].isna()[0]
 
 
 def test_missing_hourly_readings_are_left_out_of_the_average(cache: Path, monkeypatch: pytest.MonkeyPatch) -> None:

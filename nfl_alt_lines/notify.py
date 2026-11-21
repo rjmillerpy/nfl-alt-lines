@@ -5,7 +5,8 @@ Two lists, each with its own sent mark:
   come in the 3:15 AM email" kind included.
 - REPORT_EMAIL_BETS_TO gets only the important ones: a bet to place now (a single at today's price, or the round
   robin), and only when those bets change. Each list gets its own message, so neither sees the other's addresses.
-  On a game day with no bet for it, that list gets one short "no bets today" note instead (quiet_day.py).
+  On a game day with no bet for it, that list gets one short "no bets today" note instead (quiet_day.py), unless
+  the plan says NO PRICES: then "no bets" is not true, and the note is held back.
 
 Other settings: SMTP_USER and SMTP_APP_PASSWORD (a Gmail app password) and REPORT_SUBJECT_PREFIX (e.g. a name),
 which goes in front of the subject.
@@ -35,6 +36,7 @@ from nfl_alt_lines.common.settings import ENV_FILE, Settings, SettingsError, loa
 from nfl_alt_lines.common.storage import Storage
 from nfl_alt_lines.nflverse import GAMES, load_schedule
 from nfl_alt_lines.page import REPORT, REPORTS, render
+from nfl_alt_lines.plan import PRICES_MISSING
 
 SENT_MARK = f"{REPORTS}/.last_emailed"  # fingerprint of the plan last emailed to REPORT_EMAIL_TO
 BETS_SENT_MARK = f"{REPORTS}/.last_emailed_bets"  # fingerprint of the bets last emailed to REPORT_EMAIL_BETS_TO
@@ -189,6 +191,10 @@ def _note_quiet_day(settings: Settings, now: datetime, store: Storage, password:
     games = quiet_day.todays_games(load_schedule(store=store), at)
     heard = store.read(HEARD_MARK).decode() if store.exists(HEARD_MARK) else None
     if not quiet_day.due(games, at, heard):
+        return False
+    if PRICES_MISSING in plan_section(store.read(REPORT).decode()):
+        # "No bets today" would be untrue: the bets were never priced. The owner's plan email says so instead.
+        log.warning("no-bets note held back: prices missing")
         return False
     send(quiet_day.note(games, at, settings), settings.smtp_user or "", password, connect)
     store.write(HEARD_MARK, quiet_day.today(at).encode())

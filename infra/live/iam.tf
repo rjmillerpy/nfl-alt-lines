@@ -18,7 +18,7 @@ locals {
 
   github_oidc_host = "token.actions.githubusercontent.com"
   sts_audience     = "sts.amazonaws.com"
-  deploy_subject   = "repo:${var.github_repository}:ref:refs/heads/${var.deploy_branch}"
+  deploy_subject   = "${var.github_subject_prefix}:ref:refs/heads/${var.deploy_branch}"
   one_hour_seconds = 3600
 
   log_group_arns = [

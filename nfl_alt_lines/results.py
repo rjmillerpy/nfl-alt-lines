@@ -33,7 +33,8 @@ from nfl_alt_lines.nflverse import load_schedule
 from nfl_alt_lines.notify import FAILED_EXIT_CODE, EmailSendError, SmtpConnect, send
 from nfl_alt_lines.odds.books import SINGLES_BOOKS
 from nfl_alt_lines.page import REPORTS
-from nfl_alt_lines.plan import bet_text, flagged_picks, round_robin_single
+from nfl_alt_lines.picks import bet_text, big_line_picks, flagged_picks
+from nfl_alt_lines.plan import round_robin_single
 from nfl_alt_lines.pricing import closing_line_value
 from nfl_alt_lines.round_robin import afternoon, combo_return
 
@@ -100,6 +101,24 @@ def singles(ledger: pd.DataFrame, scores: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def big_lines(ledger: pd.DataFrame, scores: pd.DataFrame) -> pd.DataFrame:
+    """Each top-ranked under's bigger line as the plan picked it at its last pre-kickoff price (every game)."""
+    rows = ledger[(ledger["recorded"] == "before kickoff") & ledger["book"].isin(SINGLES_BOOKS)]
+    picks = big_line_picks(rows)
+    if picks.empty:
+        return pd.DataFrame(columns=COLUMNS)
+    return pd.DataFrame(
+        {
+            "kickoff": picks["kickoff"],
+            "game": picks["game"],
+            "bet": ["BIGGER LINE SINGLE " + bet_text(pick) for _, pick in picks.iterrows()],
+            "stake": strategy.load().staking.big_line_stake,
+            "profit": [_profit(pick, scores) for _, pick in picks.iterrows()],
+            "clv": [_clv(ledger, pick) for _, pick in picks.iterrows()],
+        }
+    )
+
+
 def _robin_rows(legs: pd.DataFrame, prices: pd.DataFrame, scores: pd.DataFrame) -> list[dict[str, object]]:
     """One round robin: its singles (each at the best price, as emailed) and its by 2s as one line."""
     count, book = len(legs), legs["book"].iloc[0]
@@ -129,7 +148,9 @@ def round_robins(robins: pd.DataFrame, ledger: pd.DataFrame, scores: pd.DataFram
 def bets(ledgers: LedgerStore, schedule: pd.DataFrame) -> pd.DataFrame:
     """Every bet the plan has emailed, graded where the game is final: stake and profit as bankroll shares."""
     ledger, scores = ledgers.load(PREDICTIONS), _scores(schedule)
-    out = pd.concat([singles(ledger, scores), round_robins(ledgers.load(ROUND_ROBINS), ledger, scores)])
+    robins = round_robins(ledgers.load(ROUND_ROBINS), ledger, scores)
+    parts = [singles(ledger, scores), big_lines(ledger, scores), robins]
+    out = pd.concat([part for part in parts if len(part)] or [pd.DataFrame(columns=COLUMNS)])
     out["kickoff"] = pd.to_datetime(out["kickoff"], utc=True).dt.tz_convert(LOCAL_ZONE)
     out["profit_share"] = out["stake"] * out["profit"].astype(float)
     return out.sort_values(["kickoff", "bet"]).reset_index(drop=True)

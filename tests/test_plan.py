@@ -1,9 +1,12 @@
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pandas as pd
 import pytest
 
+from nfl_alt_lines import strategy
 from nfl_alt_lines.plan import _final_email, _price_email, plan
+from tests.conftest import TEST_RULES
 
 pytestmark = pytest.mark.usefixtures("test_rules")  # tests/conftest.py: neutral rules, not production's
 
@@ -161,8 +164,62 @@ def test_sunday_without_enough_flags_says_so() -> None:
     ledger = pd.DataFrame(
         [priced("A", SUNDAY_NOON, "fanduel", 250), priced("B", SUNDAY_NOON, "fanduel", 250, "over", "middle")]
     )
-    text = plan(ledger, early.iloc[:0], pd.DataFrame(), ["fanduel"], NOW)
-    assert "Afternoon: no bets. Only 1 flagged games (A (under)); the round robin needs 3." in text
+    ledger["snapshot"] = "20261018T111500Z"  # logged on game day
+    text = plan(ledger, early.iloc[:0], pd.DataFrame(), ["fanduel"], NOW, bank=1000)
+    assert (
+        "  Afternoon: no round robin (it needs 3 flagged bets priced at or above break-even at one book)."
+        " Bet this as a single at its best price, before kickoff:\n"
+        "    SINGLE A: Under 38.5 at +250 on fanduel (the only book with this line), $10.00 (1% of bankroll)"
+        " (needs 28.6%, model 33.0%)\n"
+    ) in text
+    assert "SINGLE B" not in text  # not flagged
+
+
+def test_sunday_singles_without_a_round_robin_skip_bets_below_break_even() -> None:
+    ledger = pd.DataFrame([priced(g, SUNDAY_NOON, "fanduel", odds) for g, odds in (("A", 250), ("B", 150))])
+    ledger["snapshot"] = "20261018T111500Z"
+    text = plan(ledger, empty_ledger(), pd.DataFrame(), ["fanduel"], NOW)
+    assert "Bet this as a single" in text
+    assert "SINGLE B" not in text  # +150 needs 40%, the model says 33%
+    ledger["price"], ledger["break_even"] = 150, 0.4
+    text = plan(ledger, empty_ledger(), pd.DataFrame(), ["fanduel"], NOW)
+    assert (
+        "Afternoon: no bets. None of the flagged bets (A (under), B (under)) is priced at or above break-even." in text
+    )
+
+
+def test_sunday_singles_priced_days_early_say_to_wait() -> None:
+    ledger = pd.DataFrame([priced("A", SUNDAY_NOON, "fanduel", 250)])
+    ledger["snapshot"] = "20261014T111500Z"
+    text = plan(ledger, empty_ledger(), pd.DataFrame(), ["fanduel"], NOW)
+    assert "SINGLE A: Under 38.5 at +250" in text
+    assert "Early price: wait for the 6:15 AM email on game day" in text
+
+
+SUNDAY_MORNING = datetime(2026, 10, 18, 15, 16, tzinfo=UTC)  # 10:16 AM Central: noon prices were due at 6:15 AM
+
+
+def test_unpriced_games_past_their_price_email_are_marked_missing() -> None:
+    early = pd.DataFrame([flag("A", SUNDAY_NOON), flag("B", SUNDAY_NOON, "over", 0.5, "middle")])
+    text = plan(empty_ledger(), early, pd.DataFrame(), ["fanduel"], SUNDAY_MORNING)
+    assert text.splitlines()[1] == (
+        'NO PRICES for A, B: the odds feed has not delivered their lines, so "no bet" for these games is not'
+        " the model's answer. Check the odds logger."
+    )
+    assert "Afternoon round robin: NO PRICES for A, B; they were due in the 6:15 AM email." in text
+
+
+def test_a_flagged_single_without_prices_says_they_are_missing() -> None:
+    early = pd.DataFrame([flag("SEA @ DEN", THURSDAY_NIGHT)])
+    thursday = datetime(2026, 10, 15, 21, 16, tzinfo=UTC)  # 4:16 PM Central, prices were due at 2:15 PM
+    text = plan(empty_ledger(), early, pd.DataFrame(), ["fanduel"], thursday)
+    assert "NO PRICES: they were due in the 2:15 PM email, so there is no line or book to bet yet" in text
+
+
+def test_prices_are_not_missing_within_the_grace_hour() -> None:
+    early = pd.DataFrame([flag("A", SUNDAY_NOON)])
+    text = plan(empty_ledger(), early, pd.DataFrame(), ["fanduel"], datetime(2026, 10, 18, 12, 0, tzinfo=UTC))
+    assert "NO PRICES" not in text
 
 
 def test_sunday_with_nothing_flagged_names_none() -> None:
@@ -282,3 +339,69 @@ def test_a_round_robin_single_at_bovada_names_a_licensed_backup() -> None:
         "SINGLE A: Under 38.5 at +300 on bovada (beats fanduel's +250; Bovada is unlicensed: if you'd rather not,"
         " +260 on draftkings)"
     ) in text
+
+
+BIG = replace(TEST_RULES, staking=replace(TEST_RULES.staking, big_line_stake=0.002, big_line_shifts=(10.0, 13.0),
+                                          big_line_note=" - test note"))  # fmt: skip
+
+
+def big(game: str, kickoff: str, book: str, odds: int, line: float, shift: float, model: float = 0.3) -> Row:
+    return {
+        **priced(game, kickoff, book, odds),
+        "line": line,
+        "shift": shift,
+        "model": model,
+        "snapshot": "20261016T191500Z",
+    }
+
+
+@pytest.fixture
+def big_lines(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(strategy, "load", lambda: BIG)
+
+
+@pytest.mark.usefixtures("big_lines")
+def test_a_top_under_also_gets_its_best_edge_bigger_line_at_the_best_price() -> None:
+    ledger = pd.DataFrame(
+        [
+            big("SEA @ DEN", THURSDAY_NIGHT, "fanduel", 150, 38.5, 6.5, model=0.6),  # the ordinary single (best edge)
+            big("SEA @ DEN", THURSDAY_NIGHT, "fanduel", 380, 34.5, 10.5, model=0.24),  # edge 3.2 points
+            big("SEA @ DEN", THURSDAY_NIGHT, "draftkings", 400, 34.5, 10.5, model=0.24),  # same bet, pays more
+            big("SEA @ DEN", THURSDAY_NIGHT, "fanduel", 450, 31.5, 13.5, model=0.21),  # outside the band
+            big("SEA @ DEN", THURSDAY_NIGHT, "fanduel", 500, 32.5, 12.5, model=0.15),  # below break-even
+        ]
+    )
+    text = plan(ledger, empty_ledger(), pd.DataFrame(), ["draftkings", "fanduel"], NOW, bank=1000)
+    assert "SEA @ DEN (Thu 7:15 PM): SINGLE Under 38.5 at +150 on fanduel" in text  # the ordinary single, as before
+    assert (
+        "BIGGER LINES (an extra single on each top-ranked under, moved 10-13 points; on top of the bets above)"
+        " - test note:" in text
+    )
+    assert (
+        "    BIGGER LINE SINGLE SEA @ DEN: Under 34.5 at +400 on draftkings (best of 2 books;"
+        " next best +380 on fanduel), $2.00" in text
+    )
+    assert "32.5" not in text and "31.5" not in text
+    assert "Bigger lines: each top-ranked under also gets one line moved 10-13 points" in text
+
+
+@pytest.mark.usefixtures("big_lines")
+def test_no_bigger_line_for_overs_or_a_middle_ranked_under() -> None:
+    over = {**big("A", THURSDAY_NIGHT, "fanduel", 400, 50.5, 11.0), "bet_type": "over", "bet": "Over"}
+    middle = {**big("B", THURSDAY_NIGHT, "fanduel", 400, 30.5, 11.0), "bucket": "middle"}
+    text = plan(pd.DataFrame([over, middle]), empty_ledger(), pd.DataFrame(), ["fanduel"], NOW, bank=1000)
+    assert "BIGGER LINES" not in text
+
+
+@pytest.mark.usefixtures("big_lines")
+def test_the_bigger_line_is_never_the_ordinary_single_again() -> None:
+    # The only in-band line is also the game's best edge, so it is the ordinary single: no extra bet on it.
+    ledger = pd.DataFrame([big("SEA @ DEN", THURSDAY_NIGHT, "fanduel", 400, 34.5, 11.0)])
+    text = plan(ledger, empty_ledger(), pd.DataFrame(), ["fanduel"], NOW, bank=1000)
+    assert "SINGLE Under 34.5 at +400 on fanduel" in text and "BIGGER LINES" not in text
+
+
+def test_bigger_lines_are_off_without_a_stake() -> None:
+    ledger = pd.DataFrame([big("SEA @ DEN", THURSDAY_NIGHT, "fanduel", 400, 34.5, 11.0)])
+    text = plan(ledger, empty_ledger(), pd.DataFrame(), ["fanduel"], NOW, bank=1000)
+    assert "BIGGER LINES" not in text and "Bigger lines:" not in text

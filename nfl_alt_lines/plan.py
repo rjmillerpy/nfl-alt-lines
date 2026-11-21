@@ -4,10 +4,17 @@ Replaying 2023-25 Sundays at real prices (round_robin_backtest), the round robin
 and by 2s, while by 3s and 4s swung on one or two Sundays; none of it is proven. So the plan is:
 
 - Sunday afternoon: the round robin's legs, the strategy's Sunday budget of the bankroll, part of it as singles and
-  the rest spread over every two-leg parlay, all at the book the round robin was built at.
+  the rest spread over every two-leg parlay, all at the book the round robin was built at. With too few legs for a
+  round robin, each flagged bet the model prices at or above break-even is still bet as a single (the owner's
+  choice, 2026-11-15).
 - Every other flagged game (Wednesday, Thursday, Saturday, Monday, a Sunday-morning game abroad, or Sunday
   night, which is priced after the round robin is fixed): one single of the strategy's single stake at the best price.
+- Bigger lines (the owner's choice, 2026-11-20): when the strategy sets a bigger-line stake, each top-ranked
+  under also gets an extra single on a line moved further (the strategy's band), priced at or above break-even.
 - Nothing else: no stay-away lines, underdogs, by 3s or 4s, or props, which are untested against real prices.
+
+A game still unpriced an hour after its prices were due (`PRICE_GRACE`) is marked NO PRICES: on 2026-11-15
+a deactivated Odds API key left a whole Sunday unpriced, and the plan read like an ordinary day with no bets.
 
 The caller passes the bankroll (BANKROLL in .env, read by load_settings); without it the stakes are shown
 as percentages only.
@@ -20,8 +27,8 @@ import pandas as pd
 
 from nfl_alt_lines import strategy
 from nfl_alt_lines.glance import LOCAL_ZONE
-from nfl_alt_lines.odds.books import EXCHANGES, OFFSHORE
 from nfl_alt_lines.odds.snapshots import TS_FORMAT
+from nfl_alt_lines.picks import best_price, bet_text, big_line_picks, book_note, flagged_picks, same_bet
 from nfl_alt_lines.round_robin import DAY_FORMAT, LOCK_BEFORE, SLATE_FORMAT, afternoon, locked
 
 PLAN_DAYS = 7
@@ -29,6 +36,8 @@ LOG_WINDOW = timedelta(hours=6)  # odds_logger's default: a game is priced once 
 LOG_MINUTE, EMAIL_MINUTE = 5, 15  # cron: the logger runs at :05, the report and email at :15
 RUN_START_MARGIN = timedelta(minutes=10)  # a scheduled task starts a minute or two late; Fargate retries more
 GAME_DAYS = ("Wednesday", "Thursday", "Saturday", "Sunday", "Monday")
+PRICES_MISSING = "NO PRICES"
+PRICE_GRACE = timedelta(hours=1)  # a late logger run gets an hour before a game counts as unpriced
 
 
 def _stake(share: float, bank: float | None) -> str:
@@ -49,6 +58,11 @@ def _price_email(kickoff: pd.Timestamp) -> pd.Timestamp:
     return (run + timedelta(minutes=EMAIL_MINUTE - LOG_MINUTE)).tz_convert(LOCAL_ZONE)
 
 
+def _overdue(kickoff: str | pd.Timestamp, now: datetime) -> bool:
+    """True once a game's prices are more than PRICE_GRACE past the email that should have carried them."""
+    return pd.Timestamp(now) >= _price_email(pd.Timestamp(kickoff)) + PRICE_GRACE
+
+
 def _final_email(first_kickoff: pd.Timestamp) -> pd.Timestamp:
     """The last email before a round robin locks (round_robin.LOCK_BEFORE): what it says is what gets bet."""
     lock = first_kickoff - LOCK_BEFORE
@@ -56,74 +70,39 @@ def _final_email(first_kickoff: pd.Timestamp) -> pd.Timestamp:
     return run if run + RUN_START_MARGIN <= lock else run - timedelta(hours=1)
 
 
-def _same_bet(rows: pd.DataFrame, pick: pd.Series) -> pd.DataFrame:
-    """Every book's price for the pick's exact bet: same game, side and line, so the same result pays out."""
-    same: pd.DataFrame = rows[
-        (rows["game_id"] == pick["game_id"]) & (rows["bet_type"] == pick["bet_type"]) & (rows["line"] == pick["line"])
+def _big_lines(rows: pd.DataFrame, prices: pd.DataFrame, bank: float | None) -> list[str]:
+    """One game day's bigger lines, in kickoff order, as extra singles."""
+    stakes = strategy.load().staking
+    picks = big_line_picks(prices[prices["game_id"].isin(rows["game_id"])]) if len(prices) else prices
+    if picks.empty:
+        return []
+    low, high = stakes.big_line_shifts
+    lines = [
+        f"  BIGGER LINES (an extra single on each top-ranked under, moved {low:g}-{high:g} points;"
+        f" on top of the bets above){stakes.big_line_note}:"
     ]
-    return same
+    for _, pick in picks.sort_values(["kickoff", "game"]).iterrows():
+        lines.append(
+            f"    BIGGER LINE SINGLE {pick['game']}: {bet_text(pick)} ({pick['shop']}),"
+            f" {_stake(stakes.big_line_stake, bank)}"
+            f" (needs {100 * pick['break_even']:.1f}%, model {100 * pick['model']:.1f}%)"
+            f"{_early_price(pick, pd.Timestamp(pick['kickoff']))}"
+        )
+    return lines
 
 
-def _best_price(rows: pd.DataFrame, pick: pd.Series) -> pd.Series:
-    """The pick at the book paying the most for it. The model rates each book's row against that book's own main
-    line, so the same bet can rank higher at a book paying less; the bet wins or loses the same everywhere."""
-    return _same_bet(rows, pick).sort_values("price", ascending=False, kind="stable").iloc[0]
-
-
-def book_note(rows: pd.DataFrame, bet: pd.Series) -> str:
-    """A warning for a bet at an exchange or an offshore book: an exchange's posted price may only fill a small
-    stake, and Bovada is licensed nowhere, so the best licensed price for the same bet is named as well."""
-    if bet["book"] in EXCHANGES:
-        return "; exchange: the price may only fill a small stake"
-    if bet["book"] not in OFFSHORE:
-        return ""
-    same = _same_bet(rows, bet)
-    licensed = same[~same["book"].isin(OFFSHORE)]
-    if licensed.empty:
-        return "; Bovada is unlicensed and no licensed book has this line"
-    backup = licensed.sort_values("price", ascending=False, kind="stable").iloc[0]
-    return f"; Bovada is unlicensed: if you'd rather not, {backup['price']:+.0f} on {backup['book']}"
-
-
-def _shop(rows: pd.DataFrame, pick: pd.Series) -> str:
-    """How the pick's price compares: the books with the same line, the runner-up's price, and any book note."""
-    same = _same_bet(rows, pick)
-    others = same[same["book"] != pick["book"]]
-    note = book_note(rows, pick)
-    if others.empty:
-        return f"the only book with this line{note}"
-    second = others.loc[others["price"].idxmax()]
-    return f"best of {same['book'].nunique()} books; next best {second['price']:+.0f} on {second['book']}{note}"
-
-
-def flagged_picks(rows: pd.DataFrame) -> pd.DataFrame:
-    """Each game's flagged bet: an under first, else the highest-ranked type; priced rows keep the best-edge line.
-
-    The chosen line is then bet at the book paying the most for it (`_best_price`).
-    """
-    rows = rows[(rows["bucket"] == "top") & rows["bet_type"].isin(strategy.load().recommendable)]
-    edge = rows["model"] - rows["break_even"] if "price" in rows else 0.0
-    rows = rows.assign(order=rows["bet_type"] != "under", edge=edge)
-    order = ["order", "percentile", "edge"]
-    picks = rows.sort_values(order, ascending=[True, False, False]).drop_duplicates("game_id")
-    if "price" in rows:
-        picks = pd.DataFrame([_best_price(rows, pick) for _, pick in picks.iterrows()], columns=picks.columns)
-        picks = picks.assign(shop=[_shop(rows, pick) for _, pick in picks.iterrows()])
-    return picks
-
-
-def bet_text(row: pd.Series) -> str:
-    line = f"{row['line']:g}" if row["bet_type"] in ("over", "under") else f"{row['line']:+g}"
-    return f"{row['bet']} {line} at {row['price']:+.0f} on {row['book']}"
-
-
-def _single(game: pd.Series, picks: pd.DataFrame, bank: float | None) -> str:
+def _single(game: pd.Series, picks: pd.DataFrame, now: datetime, bank: float | None) -> str:
     where = f"  {game['game']} ({game['local'].strftime('%a')} {_clock(game['local'])})"
     if game["game_id"] not in picks.index:
         return f"{where}: no bet, nothing flagged"
     pick = picks.loc[game["game_id"]]
     if pd.isna(pick.get("price")):
         email = _clock(_price_email(pd.Timestamp(game["kickoff"])))
+        if _overdue(game["kickoff"], now):
+            return (
+                f"{where}: {pick['bet_type']} flagged (ranked {100 * pick['percentile']:.0f} of 100). {PRICES_MISSING}:"
+                f" they were due in the {email} email, so there is no line or book to bet yet"
+            )
         return (
             f"{where}: {pick['bet_type']} flagged (ranked {100 * pick['percentile']:.0f} of 100). Prices come in the"
             f" {email} email with the best line and book; if it is still flagged, bet that as a single,"
@@ -134,19 +113,73 @@ def _single(game: pd.Series, picks: pd.DataFrame, bank: float | None) -> str:
         f"{where}: SINGLE {bet_text(pick)} ({pick['shop']}), {_stake(strategy.load().staking.single_stake, bank)}"
         f" (needs {100 * pick['break_even']:.1f}%, model {100 * pick['model']:.1f}%)"
     )
-    snapshot = pd.to_datetime(pick.get("snapshot"), format=TS_FORMAT, utc=True, errors="coerce")
+    return bet + _early_price(pick, kickoff)
+
+
+def _early_price(pick: pd.Series, kickoff: pd.Timestamp) -> str:
+    """A note for a price logged before game day (notify.py's EARLY_PRICE keeps it off the bets-only list)."""
+    snapshot = pd.to_datetime(str(pick.get("snapshot", "")), format=TS_FORMAT, utc=True, errors="coerce")
     if pd.notna(snapshot) and snapshot < kickoff - LOG_WINDOW:
-        bet += f". Early price: wait for the {_clock(_price_email(kickoff))} email on game day and bet what it shows"
-    return bet
+        return f". Early price: wait for the {_clock(_price_email(kickoff))} email on game day and bet what it shows"
+    return ""
 
 
 def round_robin_single(prices: pd.DataFrame, leg: pd.Series) -> pd.Series:
     """A round-robin leg bet as a single: at the book paying the most for that exact bet. Only the by 2s must
     stay at the round robin's book; on a tie the single stays there too."""
-    same = _same_bet(prices, leg) if len(prices) else prices
+    same = same_bet(prices, leg) if len(prices) else prices
     if same.empty or same["price"].max() <= leg["price"]:
         return leg
-    return _best_price(prices, leg)
+    return best_price(prices, leg)
+
+
+def _afternoon_singles(
+    games: pd.DataFrame, prices: pd.DataFrame, names: str, needed: int, bank: float | None
+) -> list[str]:
+    """Sunday afternoon without a round robin: each flagged bet the model prices at or above break-even, as a single
+    at the best price; or no bets, when there is none."""
+    rows = prices[prices["game_id"].isin(games["game_id"]) & (prices["model"] >= prices["break_even"])]
+    picks = flagged_picks(rows)
+    if picks.empty:
+        return [f"  Afternoon: no bets. None of the flagged bets ({names}) is priced at or above break-even."]
+    stake = _stake(strategy.load().staking.single_stake, bank)
+    lines = [
+        f"  Afternoon: no round robin (it needs {needed} flagged bets priced at or above break-even at one book)."
+        f" Bet {'this' if len(picks) == 1 else 'each'} as a single at its best price, before kickoff:"
+    ]
+    for _, pick in picks.sort_values(["kickoff", "game"]).iterrows():
+        lines.append(
+            f"    SINGLE {pick['game']}: {bet_text(pick)} ({pick['shop']}), {stake}"
+            f" (needs {100 * pick['break_even']:.1f}%, model {100 * pick['model']:.1f}%)"
+            f"{_early_price(pick, pd.Timestamp(pick['kickoff']))}"
+        )
+    return lines
+
+
+def _without_round_robin(
+    games: pd.DataFrame, picks: pd.DataFrame, prices: pd.DataFrame, now: datetime, bank: float | None
+) -> list[str]:
+    """Sunday afternoon with no round robin: singles once every game is priced, else what it is waiting for."""
+    first, needed = games["local"].min(), strategy.load().min_legs
+    flagged = games[games["game_id"].isin(picks.index)]
+    kinds = flagged["game_id"].map(picks["bet_type"])
+    names = ", ".join(f"{game} ({kind})" for game, kind in zip(flagged["game"], kinds, strict=True)) or "none"
+    if games["game_id"].isin(prices["game_id"]).all():
+        return _afternoon_singles(games, prices, names, needed, bank)
+    unpriced = games[~games["game_id"].isin(prices["game_id"])]
+    if any(_overdue(kickoff, now) for kickoff in unpriced["kickoff"]):
+        return [
+            f"  Afternoon round robin: {PRICES_MISSING} for {', '.join(unpriced['game'])}; they were due in the"
+            f" {_clock(_price_email(pd.Timestamp(unpriced['kickoff'].min())))} email. Flagged so far: {names}."
+        ]
+    return [
+        f"  Afternoon round robin: not built yet. Flagged so far: {names}.",
+        (
+            f"    If {needed} or more are still flagged when prices come in, the bets and the one book to place"
+            f" them at appear here by the 10:15 AM email; place them before the {_clock(first)} kickoff."
+            " With fewer, each flagged bet priced at or above break-even is a single."
+        ),
+    ]
 
 
 def _round_robin(
@@ -158,23 +191,8 @@ def _round_robin(
     bank: float | None,
 ) -> list[str]:
     """Sunday afternoon: the round robin's bets with stakes, or what it is waiting for."""
-    first, needed = games["local"].min(), strategy.load().min_legs
     if legs.empty:
-        flagged = games[games["game_id"].isin(picks.index)]
-        kinds = flagged["game_id"].map(picks["bet_type"])
-        names = ", ".join(f"{game} ({kind})" for game, kind in zip(flagged["game"], kinds, strict=True)) or "none"
-        if games["game_id"].isin(prices["game_id"]).all():
-            return [
-                f"  Afternoon: no bets. Only {len(flagged)} flagged games ({names}); the round robin needs {needed}."
-            ]
-        return [
-            f"  Afternoon round robin: not built yet. Flagged so far: {names}.",
-            (
-                f"    If {needed} or more are still flagged when prices come in, the bets and the one book to place"
-                f" them at appear here by the 10:15 AM email; place them before the {_clock(first)} kickoff."
-                " Otherwise no afternoon bets."
-            ),
-        ]
+        return _without_round_robin(games, picks, prices, now, bank)
     count, pairs = len(legs), comb(len(legs), 2)
     kickoffs = pd.to_datetime(legs["kickoff"], utc=True).dt.tz_convert(LOCAL_ZONE)
     book = legs["book"].iloc[0]
@@ -237,12 +255,12 @@ def _day(
     in_robin = afternoon(rows["local"])
     # In time order: a Sunday-morning game abroad, then the afternoon round robin, then the night game.
     before = ~in_robin & (rows["local"] < rows.loc[in_robin, "local"].min()) if in_robin.any() else ~in_robin
-    lines += [_single(game, picks, bank) for _, game in rows[before].iterrows()]
+    lines += [_single(game, picks, now, bank) for _, game in rows[before].iterrows()]
     if in_robin.any():
         legs = robins[robins["slate"] == slate] if len(robins) else robins
         lines += _round_robin(rows[in_robin], picks, legs, prices, now, bank)
-    lines += [_single(game, picks, bank) for _, game in rows[~in_robin & ~before].iterrows()]
-    return lines
+    lines += [_single(game, picks, now, bank) for _, game in rows[~in_robin & ~before].iterrows()]
+    return lines + _big_lines(rows, prices, bank)
 
 
 def _quiet_days(games: pd.DataFrame, now: datetime) -> list[str]:
@@ -270,6 +288,13 @@ def _rules(bank: float | None) -> list[str]:
         ),
         *rules.standing_rules,
     ]
+    if stakes.big_line_stake > 0:
+        low, high = stakes.big_line_shifts
+        lines.insert(
+            1,
+            f"Bigger lines: each top-ranked under also gets one line moved {low:g}-{high:g} points, priced at or above"
+            f" break-even, {_stake(stakes.big_line_stake, bank)} as an extra single.",
+        )
     if bank is None:
         lines.append("Add BANKROLL=<amount> to .env to see the stakes in dollars.")
     return lines
@@ -289,6 +314,13 @@ def plan(
         "WHAT TO BET THIS WEEK (Sunday afternoon: singles at the best price and by 2s at one book; any other flagged"
         " game: one single)"
     ]
+    unpriced = games[~games["game_id"].isin(priced["game_id"])]
+    missing = unpriced[[_overdue(kickoff, now) for kickoff in unpriced["kickoff"]]]
+    if len(missing):
+        lines.append(
+            f"{PRICES_MISSING} for {', '.join(missing['game'])}: the odds feed has not delivered their lines, so"
+            ' "no bet" for these games is not the model\'s answer. Check the odds logger.'
+        )
     for slate, rows in games.groupby(games["local"].dt.strftime(SLATE_FORMAT), sort=True):
         lines += _day(str(slate), rows, picks, robins, priced, now, bank)
     empty = _quiet_days(games, now)

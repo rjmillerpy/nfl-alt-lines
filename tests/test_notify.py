@@ -28,6 +28,7 @@ from nfl_alt_lines.notify import (
     plan_section,
 )
 from nfl_alt_lines.page import REPORT
+from nfl_alt_lines.plan import PRICES_MISSING
 
 PLAN = """Run at {run}; ledger: data/ledger/predictions.csv
 
@@ -279,6 +280,16 @@ def test_no_note_when_the_bets_list_got_a_bet_today(report_file: Path) -> None:
     assert store.read(HEARD_MARK).decode() == "2026-10-15"
 
 
+def test_no_note_when_prices_are_missing(report_file: Path) -> None:
+    """ "No bets today" would be untrue when nothing was priced: only the owner hears, from the plan email."""
+    missing = f"{PRICES_MISSING} for SEA @ DEN: the odds feed has not delivered their lines"
+    store = with_schedule(report_file, f"Run at 1\n\nWHAT TO BET THIS WEEK\n{missing}\n{NO_BETS}\n")
+    server = FakeSmtp()
+    assert send(server, report_file, settings(report_email_bets_to=FRIENDS)) is Outcome.SENT
+    assert [message["To"] for message in server.sent] == [USER]
+    assert not store.exists(HEARD_MARK)
+
+
 def test_no_note_without_a_bets_list(report_file: Path) -> None:
     with_schedule(report_file, f"Run at 1\n\nWHAT TO BET THIS WEEK\n{NO_BETS}\n")
     server = FakeSmtp()
@@ -359,3 +370,11 @@ def test_main_exits_non_zero_on_invalid_settings(project: Path) -> None:
     with pytest.raises(SystemExit) as exited:
         notify.main([], FakeSmtp(), project)
     assert exited.value.code == notify.FAILED_EXIT_CODE
+
+
+def test_a_bigger_line_reaches_the_bets_only_list_on_its_own_line() -> None:
+    report = (
+        "WHAT TO BET THIS WEEK\n  BIGGER LINES (an extra single ...):\n"
+        "    BIGGER LINE SINGLE A: Under 30.5 at +400 on fanduel, 0.2%\n"
+    )
+    assert bets(report) == "    BIGGER LINE SINGLE A: Under 30.5 at +400 on fanduel, 0.2%"

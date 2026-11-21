@@ -172,7 +172,7 @@ run "github_may_only_push_images_from_main" {
   assert {
     condition = jsondecode(aws_iam_role.github_deploy.assume_role_policy).Statement[0].Condition.StringEquals == {
       "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-      "token.actions.githubusercontent.com:sub" = "repo:rjmillerpy/nfl-alt-lines-private:ref:refs/heads/main"
+      "token.actions.githubusercontent.com:sub" = "repo:rjmillerpy@155037632/nfl-alt-lines-private@1420096925:ref:refs/heads/main"
     }
     error_message = "Only a workflow on this repository's main branch may assume the deploy role."
   }

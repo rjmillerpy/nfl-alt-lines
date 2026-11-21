@@ -21,6 +21,16 @@ variable "github_repository" {
   default     = "rjmillerpy/nfl-alt-lines-private"
 }
 
+variable "github_subject_prefix" {
+  description = <<-EOT
+    The start of the OIDC subject GitHub signs for this repository. GitHub now uses immutable subjects, with the
+    owner's and the repository's numeric ids, so a rename cannot hand the role to another repository. Read it with
+    `gh api repos/<owner>/<name>/actions/oidc/customization/sub` (sub_claim_prefix).
+  EOT
+  type        = string
+  default     = "repo:rjmillerpy@155037632/nfl-alt-lines-private@1420096925"
+}
+
 variable "deploy_branch" {
   type    = string
   default = "main"

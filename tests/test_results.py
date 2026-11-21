@@ -1,4 +1,5 @@
 import smtplib
+from dataclasses import replace
 from datetime import UTC, datetime
 from email.message import EmailMessage
 from pathlib import Path
@@ -7,13 +8,14 @@ import pandas as pd
 import pytest
 from pydantic import SecretStr
 
-from nfl_alt_lines import results
+from nfl_alt_lines import results, strategy
 from nfl_alt_lines.common.settings import Settings
 from nfl_alt_lines.common.storage import LocalStorage
 from nfl_alt_lines.db.schema import PREDICTIONS, ROUND_ROBINS
 from nfl_alt_lines.db.service import LedgerStore
 from nfl_alt_lines.notify import EmailSendError
 from nfl_alt_lines.results import SENT_MARK, bets, due, send_results, summary, week_end
+from tests.conftest import TEST_RULES
 from tests.db.test_schema import prediction
 from tests.test_notify import PASSWORD, USER, FakeSmtp
 
@@ -208,3 +210,17 @@ def test_each_bet_shows_its_clv_at_its_own_price(ledgers: LedgerStore) -> None:
     assert "SINGLE Under 34.5 at +210 on fanduel, stake 1.00%  won +2.10%, CLV +8.5%" in text  # 0.35 x 3.10 - 1
     assert "ROUND ROBIN SINGLE Under 36.5 at +250 on betmgm" in text and "CLV +22.5%" in text  # 0.35 x 3.50 - 1
     assert "average CLV +15.5% over 2 bets" in text  # B and C closed without a snapshot: no CLV
+
+
+def test_bigger_lines_are_graded_at_their_own_stake(ledgers: LedgerStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    rules = replace(TEST_RULES, staking=replace(TEST_RULES.staking, big_line_stake=0.002))
+    monkeypatch.setattr(strategy, "load", lambda: rules)
+    rows = [
+        {**single("SD", "SEA @ DEN", THURSDAY, 34.5, 400), "shift": 11.0, "model": 0.3},
+        {**single("SD", "SEA @ DEN", THURSDAY, 40.5, 150), "shift": 6.0, "model": 0.6},  # the ordinary single
+    ]
+    ledgers.save(PREDICTIONS, pd.DataFrame(rows))
+    graded = bets(ledgers, schedule(("SD", 14, 17)))  # 31 points: both unders win
+    big = graded[graded["bet"].str.startswith("BIGGER LINE")]
+    assert big["bet"].tolist() == ["BIGGER LINE SINGLE Under 34.5 at +400 on fanduel"]
+    assert big["stake"].tolist() == [0.002] and big["profit"].tolist() == [4.0]
